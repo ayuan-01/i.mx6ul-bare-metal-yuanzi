@@ -1,3 +1,53 @@
+### C语言知识点，边学边记
+
+#### 函数指针
+
+- 函数指针是指向函数的指针。它允许动态地调用函数，即在运行中决定调用哪个函数。
+
+  ```C
+  typedef void (*system_irq_handler_t)(unsigned int gicciar, void *param);
+  ```
+
+  这条语句将一个函数指针类型定义为 `system_irq_handler_t`，它指向一个返回类型为 `void` 的函数。
+
+  **只要满足输入参数类型，返回参数类型与函数指针定义相匹配，都可以被函数指针指向。**
+
+  示例：
+
+  ```c
+  /* 定义函数 */
+  #include <stdio.h>
+  
+  // 定义符合 system_irq_handler_t 类型的函数
+  void my_irq_handler(unsigned int gicciar, void *param) {
+      printf("IRQ Handler called with gicciar: %u, param: %p\n", gicciar, param);
+  }
+  
+  ```
+
+  ```C
+  // 定义函数指针类型
+  typedef void (*system_irq_handler_t)(unsigned int gicciar, void *param);
+  ```
+
+  ```C
+  // 声明和使用函数指针
+  int main() {
+      // 声明一个 system_irq_handler_t 类型的函数指针
+      system_irq_handler_t handler;
+  
+      // 将函数指针指向 my_irq_handler 函数
+      handler = my_irq_handler;
+  
+      // 调用函数指针
+      handler(123, (void *)0xDEADBEEF);
+  
+      return 0;
+  }
+  ```
+
+  
+
 ### 启动流程
 
 #### 汇编启动程序
@@ -8,13 +58,106 @@
   - 复位中断服务程序
     - 关闭全局中断(cpsid i)。
     - 使用CP15协处理器管理STCLR寄存器，关闭ICache，DCache，MMU。
-    - 清除BSS段。连接脚本中设置BSS段的起始和终止地址，使用循环清除这个地址范围内的所有内容。
-    - 分别设置处理器的9种工作模式并定义对应的SP指针。查看各种工作模式16个寄存器的共用模式。
+    - **清除BSS段。**链接脚本(.lds)中设置BSS段的起始和终止地址，使用循环清除这个地址范围内的所有内容。
+    - 分别设置处理器的9种工作模式并定义对应的SP指针。查看各种工作模式下16个寄存器的共用模式。最后设置CPU工作模式为**SVC模式**
     - 打开IRQ中断(cpsie i)。
     - 跳转到main函数。
+    
   - 编写IRQ中断服务函数
+  
+    - 1. 保护现场。触发中断的机制首先会保存(push)一些寄存器，一些不会自动保存的寄存器(r0-r3, r12)需要我们手动保存，`push {lr}` 用于保存函数调用返回地址。
+  
+         ```csv
+         mrs r0, spsr	// 保存spsr
+         push {r0}
+         ```
+
+      2. 读取GICC_IAR寄存器，这个寄存器保存着当前发生中断的中断号，通过这个中断号来决定来调用哪个中断服务函数。
+  
+      3. 进入svc模式，push {lr}，跳转执行system_irqhandler。
+  
+      4. 执行完后pop {lr}。回到irq模式。
+  
+      5. 中断执行完成，写GICC_EOIR寄存器。处理完具体中断后，需要将对应的中断ID值写入到GICC_EOIR中 通知GIC当前处理中断已经处理完毕，允许GIC分配下一个中断。
+  
+      6. 恢复现场。
+  
+         ```csv
+         pop {r0-r3, r12}
+         subs pc, lr, #4
+         /* pc = lr-4是因为arm的指令是三级流水线结构，假如在执行0x2000指令时触发中断，pc此时是  * 指向0x2008的，如果中断结束后返回到0x2008开始执行那么将会漏掉一个指令，这个后果会很严重 */
+         ```
+  
+  
+  - C语言中编写中断相关函数。
+  
+    - 中断初始化函数。
+  
+    - 定义中断处理函数(函数指针)，有两个参数，包括iar，param。创建包括函数指针和参数的中断处理结构体。
+  
+      ```C
+      typedef struct _sys_irq_handler
+      {
+          system_irq_handler_t irqHandler;            /* 中断处理函数 */
+          void *userParam;                            /* 中断处理函数的参数 */
+      }sys_irq_handle_t;
+      ```
+  
+    - 定义中断处理函数表(存放中断处理函数结构体类型的数组)。
+  
+      ```c
+      static sys_irq_handle_t irqTable[NUMBER_OF_INT_VECTORS];            /* 160个 */
+      ```
+  
+      相当于给了160个中断处理函数。对应着相应的中断号。
+  
+    - 初始化中断处理函数表。
+  
+      ```c
+      void system_irq_init(void)
+      {
+          unsigned int i = 0;
+          irqNesting = 0;
+          for (i = 0; i < NUMBER_OF_INT_VECTORS; i++)
+          {
+              irqTable[i].irqHandler = default_irqHandler;
+              irqTable[i].userParam  = NULL;
+          } 
+      }
+      ```
+  
+    - 注册中断处理函数
+  
+      ```c
+      void system_register_irqhandler(IRQn_Type irq, system_irq_handler_t handler, void *userparam)
+      {
+          irqTable[irq].irqHandler = handler;
+          irqTable[irq].userParam  = userparam;
+      }
+      ```
+  
+    - 具体的中断处理函数
+  
+      ```c
+      void system_irqhandler(unsigned int gicciar)
+      {
+          /* 检查中断ID */
+          uint32_t intNum = gicciar & 0x3ff;
+          if(intNum >= NUMBER_OF_INT_VECTORS)
+          {
+              return;
+          }
+          irqNesting++;
+          /* 根据中断ID号，读取中断处理函数，然后执行 */
+          irqTable[intNum].irqHandler(intNum, irqTable[intNum].userParam);
+          irqNesting--;
+      }
+      ```
+  
+      
 
 #### 链接脚本
+
 ##### 链接脚本具体解释
 
 这个代码段是一个GNU LD（Linker Script）脚本，它定义了如何将程序的不同部分布局到内存中。具体来说，这个脚本定义了各个段（sections）在内存中的位置和对齐方式。
