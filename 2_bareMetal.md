@@ -58,6 +58,117 @@
   - 递归函数不能被内联，因为编译器无法确定递归的结束条件。
   - 过多使用 `inline` 可能导致代码膨胀，反而降低性能。
 
+### 正点原子Makefile文件详解
+
+```makefile
+CROSS_COMPILE 	?= arm-linux-gnueabihf-		# 变量，交叉编译工具链的前缀
+TARGET 			?= i2c						# 生成的目标文件的名称
+CC				:= $(CROSS_COMPILE)gcc		# 定义gcc编译器
+LD				:= $(CROSS_COMPILE)ld		# 链接器
+OBJCOPY			:= $(CROSS_COMPILE)objcopy	# 生成elf可执行文件
+OBJDUMP			:= $(CROSS_COMPILE)objdump	# 反汇编
+
+# LIBPATH：链接器的库路径和库文件。在这里指定了库路径和 -lgcc 选项。
+# 告诉链接器在链接阶段需要使用哪些库和哪些库文件
+# -lgcc -l是链接器选项的标志，表示链接一个库 gcc是要链接库的名称，它通常是GCC编译器自带的运行时库
+# -L 是链接器选项的标志，表示指定一个库文件搜索路径
+# -lgcc：告诉链接器链接 GCC 的运行时库（libgcc），这是必要的，因为它提供了一些基本的支持功能。
+# -L /usr/local/arm/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf/lib/gcc/arm-linux-gnueabihf/4.9.4：指定了一个库搜索路径，链接器会在这个路径下查找 libgcc 及其他库文件。
+LIBPATH			:= -lgcc -L /usr/local/arm/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf/lib/gcc/arm-linux-gnueabihf/4.9.4
+
+# 头文件所在的路径
+INCUDIRS		:= 	imx6u 		\
+					bsp/clk		\
+					bsp/delay	\
+					bsp/led		\
+					bsp/beep	\
+					bsp/key		\
+					bsp/gpio	\
+					bsp/int		\
+					bsp/exit	\
+					bsp/epit	\
+					bsp/keyfilter\
+					bsp/uart	\
+					bsp/lcd		\
+					bsp/rtc		\
+					bsp/ap3216c	\
+					bsp/i2c		\
+					stdio/include
+
+# 源文件所在的路径
+SRCDIRS			:=	project		\
+					bsp/clk		\
+					bsp/delay	\
+					bsp/led		\
+					bsp/beep	\
+					bsp/key		\
+					bsp/gpio	\
+					bsp/int		\
+					bsp/exit	\
+					bsp/epit	\
+					bsp/keyfilter\
+					bsp/uart	\
+					bsp/lcd		\
+					bsp/rtc		\
+					bsp/ap3216c	\
+					bsp/i2c		\
+					stdio/lib
+# 这个函数用于替换字符串中的模式，%，表示匹配 INCUDIRS 中的每一个元素。即将INCUDIRS中的每一个元素前都加上-I
+# -I的作用-I选项在编译器中用于指定头文件的搜索路径。它告诉编译器在哪里查找 #include 指令中指定的头文件。
+INCLUDE			:= $(patsubst %, -I %, $(INCUDIRS))
+
+# 查找所有汇编文件和C文件（文件路径）
+# $(foreach dir, $(SRCDIRS), $(wildcard $(dir)/*.S))
+# foreach函数遍历列表中的每一个元素并 执行指定的操作（wildcard函数操作）
+# 查找SRCDIRS中每个路径并且复制给dir
+# wildcard函数用于匹配符合指定模式的文件，找到每个dir路径中的.S文件
+
+# 工作流程
+# 遍历 $(SRCDIRS) 变量中的每一个目录:
+# $(foreach dir, $(SRCDIRS), ...) 会依次将 $(SRCDIRS) 中的每个目录赋值给 dir。
+
+# 对于每个目录，使用 wildcard 查找汇编源文件:
+# $(wildcard $(dir)/*.S) 查找当前目录 $(dir) 下所有扩展名为 .S 的文件。
+
+# 将所有找到的文件合并成一个列表:
+# foreach 函数将每次 wildcard 找到的文件列表合并成一个大的文件列表，最终赋值给 SFILES 变量。
+SFILES			:= $(foreach dir, $(SRCDIRS), $(wildcard $(dir)/*.S))
+CFILES			:= $(foreach dir, $(SRCDIRS), $(wildcard $(dir)/*.c))
+
+# 获取源文件的文件名（不包括路径）
+SFILENDIR		:= $(notdir $(SFILES))
+CFILENDIR		:= $(notdir $(CFILES))
+
+# 对应的目标文件（.o），放在obj/下
+SOBJS			:= $(patsubst %, obj/%, $(SFILENDIR:.S=.o))
+COBJS			:= $(patsubst %, obj/%, $(CFILENDIR:.c=.o))
+
+# 所有目标文件列表
+OBJS 			:= $(SOBJS)$(COBJS)
+
+# 指定make查找源文件的路径
+VPATH			:= $(SRCDIRS)
+
+# 构建规则
+$(TARGET).bin: $(OBJS)
+	$(LD) -Timx6u.lds -o $(TARGET).elf $^ $(LIBPATH)
+	$(OBJCOPY) -O binary -S $(TARGET).elf $@
+	$(OBJDUMP) -D -m arm $(TARGET).elf > $(TARGET).dis
+
+$(COBJS): obj/%.o : %.c
+	$(CC) $(INCLUDE) -Wa,-mimplicit-it=thumb -fno-builtin -c -Wall -nostdlib -O2 -o $@ $<
+$(SOBJS): obj/%.o : %.S
+	$(CC) $(INCLUDE) -fno-builtin -c -Wall -nostdlib -O2 -o $@ $<
+
+.PHONY:clean
+clean:
+	rm -rf $(OBJS) $(TARGET).elf $(TARGET).bin $(TARGET).dis load.imx
+	rm -rf *.elf *.bin *.dis load.imx
+
+```
+
+
+
 ### 启动流程
 
 #### 汇编启动程序
