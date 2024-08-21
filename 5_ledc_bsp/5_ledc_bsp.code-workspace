@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"mcimx6y2.h": "c",
+			"main.h": "c",
+			"fsl_common.h": "c",
+			"fsl_iomuxc.h": "c"
+		}
+	}
+}
