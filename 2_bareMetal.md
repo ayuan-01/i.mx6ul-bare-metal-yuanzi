@@ -58,6 +58,21 @@
   - 递归函数不能被内联，因为编译器无法确定递归的结束条件。
   - 过多使用 `inline` 可能导致代码膨胀，反而降低性能。
 
+### while
+
+```
+i = 5;
+while(i--) {}
+```
+
+`i` 的值会是 4, 3, 2, 1, 0。解释如下：
+
+- `i--` 是一个后缀递减操作符。它会在每次迭代时首先使用 `i` 的当前值，然后将 `i` 减 1。
+- 当 `i` 的值为 5 时，`i--` 会先将 `i` 的值 5 用于判断循环条件，然后将 `i` 减 1 变成 4。
+- 循环会继续执行直到 `i` 的值变成 0。在 `i` 为 0 时，`i--` 会将 `i` 用于判断条件（0）后再将 `i` 减 1。此时 `i` 变成 -1，但循环已经结束，因为判断条件 `i--` 在每次迭代后会使用 `i` 的值。
+
+所以，`i` 的值在循环结束时是 `-1`，但循环过程中 `i` 的值为 5, 4, 3, 2, 1, 0。
+
 ### 正点原子Makefile文件详解
 
 ```makefile
@@ -1251,3 +1266,291 @@ DDR3 是一种性能强大且应用广泛的内存技术，凭借其高带宽、
 SCL和SDA需要接上拉电阻一般4.7K，3.3V。
 
 I2C总线支持多从机，通过从机地址开区分访问哪个从机
+
+IIC写时序
+
+![my image](D:\users\wsy\Desktop\document\prinscr\Snipaste_2024-08-21_22-33-14.png)
+
+IIC读时序
+
+![my image](D:\users\wsy\Desktop\document\prinscr\Snipaste_2024-08-21_22-40-33.png)
+
+写时序有三部分，读时序有四部分，比写多一部分。分别写四个函数以实现四部分内容
+
+#### IIC驱动
+
+- 初始化IIC
+
+  ```c
+  void i2c_init(I2C_Type *base)
+  {
+      base->I2CR &= ~(1 << 7);        /* 关闭I2C */
+      base->IFDR = 0x15;              /* 640分频 103.125KHz*/
+      base->I2CR |= (1 <<7);          /* 打开I2C */
+  }
+  ```
+
+- 主机
+
+  - start函数
+
+    使用哪个IIC，设备地址，写方向
+
+    开始使用IIC时判断IIC是否在忙
+
+    设置为主机发送
+
+    寄存器中写入地址，自动产生start信号
+
+    ```c
+    unsigned int i2c_master_start(I2C_Type *base, unsigned char address, enum i2c_direction direction)
+    {
+        if (base->I2SR & (1 << 5))  /* I2C忙 */
+            return 1;
+        
+        /* 设置为主机模式1左移5设置为主机，1左移4设置为发送 */
+        base->I2CR |= (1 << 5) | (1 << 4);
+        
+        /* 产生start，发送从机地址时（I2C_I2DR寄存器中写入从机地址），start信号就会同步产生，不用手动设置 */
+        base->I2DR = ((unsigned int)address << 1) | (direction == kI2C_Read ? 1 : 0);        /* 高7位是地址，最低位是读写，所以要左移一位 */
+    
+        return 0;
+    }
+    ```
+
+  - stop函数
+
+    停止哪个IIC
+
+    寄存器清零停止IIC
+
+    等待IIC工作完成后return OK
+
+    ```c
+    unsigned char i2c_master_stop(I2C_Type *base)
+    {
+        unsigned short timeout = 0xffff;    /* 超时时间 */
+    
+        /* 清除i2c的bit5:3
+         * 5清零从模式
+         * 4清零接收模式
+         * 3清零，在接收到一个字节的数据后在第九个时钟位向总线发送确认信号，这个位仅仅在接收模式下写1
+         */
+        base->I2CR &= ~(0x7 << 3);
+    
+        /* 等待i2c忙结束 */
+        while(base->I2SR & (1 << 5))
+        {
+            timeout--;
+            if(timeout == 0)    /* 超时跳出 */
+                return I2C_STATUS_TIMEOUT;
+        }
+        return I2C_STATUS_OK;
+    }
+    ```
+
+  - repeated start函数
+
+    判断是否忙碌或者工作在从机模式
+
+    设置发送产生restart
+
+    发送地址以及读方向，return OK
+
+    ```c
+    unsigned int i2c_master_repeated_start(I2C_Type *base, unsigned char address, enum i2c_direction direction)
+    {
+        /* I2C是否忙或者工作在从机模式下，因为restart信号是在信号传输中进行的，所以要检查在这个过程中是否被设置成了从机模式 */
+        if((base->I2SR & (1 << 5)) && (base->I2CR & (1 << 5)))
+            return 1;
+        /* 1<<4为发送，1<<2为产生restart信号 */
+        base->I2CR |= (1 << 4) | (1 << 2);
+        base->I2DR = ((unsigned int)address << 1) | (direction == kI2C_Read ? 1 : 0);        /* 高7位是地址，最低位是读写，所以要左移一位 */
+        return I2C_STATUS_OK;
+    }
+    ```
+
+  - 错误检查函数
+
+    ```c
+    unsigned char i2c_check_and_clear_error(I2C_Type *base, unsigned int status)
+    {
+        /* 先检查是否为仲裁丢失错误 */
+        if(base->I2SR & (1 << 4)) {
+            base->I2SR &= ~(1 << 4);
+            base->I2CR &= ~(1 << 7);
+            base->I2CR |= (1 << 7);
+            return I2C_STATUS_ARBITRATION_LOST;
+        }
+        else if(base->I2SR & (1 << 0)) {    // 检测到NOACK信号
+            return I2C_STATUS_NAK;
+        }
+        return I2C_STATUS_OK;
+    }
+    ```
+
+  - write函数
+
+    中间过程，等待传输完成而是检测是否处于忙碌
+
+    清除中断，设置发送
+
+    while函数将要写入的数据依次给I2DR寄存器，每一次输入要判断SR寄存器是否当前字节数据是否传输完成，然后才开始下一个数据的传输。
+
+    检查是否有传输错误
+
+    清除标志位，停止传输
+
+    ```c
+    void i2c_master_write(I2C_Type *base, const unsigned char *buf, unsigned int size)
+    {
+        /* 等待传输完成 */
+        while(!(base->I2SR & (1 << 7)));
+    
+        base->I2SR &= ~(1 << 1);            /* 清除中断 */
+        base->I2CR |= (1 << 4);             /* 设置为发送 */
+    
+        while (size--)
+        {
+            base->I2DR = *buf++;            /* 将要发送的数据写入I2DR */
+            while(!(base->I2SR & (1 << 1)));    /* 等待传输完成 */
+            
+            /* 检查ACK */
+            if(i2c_check_and_clear_error(base, base->I2SR))
+                break;  // 检测到有错误发生中断发送
+        }
+        base->I2SR &= ~(1 << 1);
+        i2c_master_stop(base);
+    }
+    ```
+
+  - read函数
+
+    等待传输完成
+
+    清除标志位，设置接收
+
+    ```c
+    void i2c_master_read(I2C_Type *base, unsigned char *buf, unsigned int size)
+    {
+        volatile uint8_t dummy = 0;     /* 假读 */
+        dummy++;                        /* 防止编译报错 */
+        /* 等待传输完成 */
+        while(!(base->I2SR & (1 << 7)));
+    
+        base->I2SR &= ~(1 << 1);            /* 清除中断 */
+        base->I2CR &= ~((1 << 4) | (1 << 3));
+    
+        /* 当有多个数据的时候，读倒数第二个数据的时候主机向从机发送NACK信号，当只有一个数据的时候主机直接向从机发送NACK */
+        if (size == 1)
+        {
+            base->I2CR |= (1 << 3);                 /* NACK */
+        }
+    
+        while(size--) {
+            while(!(base->I2SR & (1 << 1)));        /* 等待数据传输完成 */
+            base->I2SR &= ~(1 << 1);
+    
+            if (size == 0)                          /* 数据发送完成 */
+            {
+                i2c_master_stop(base);
+            }
+            if (size == 1)
+            {
+                base->I2CR |= (1 << 3);             /* NACK */
+            }
+            
+            *buf++ = base->I2DR;
+        }
+    }
+    ```
+
+  - 传输函数
+
+    ```c
+    unsigned char i2c_master_transfer(I2C_Type *base, struct i2c_transfer *xfer)
+    {
+    	unsigned char ret = 0;
+    	enum i2c_direction direction = xfer->direction;	
+    
+    	base->I2SR &= ~((1 << 1) | (1 << 4));			/* 清除标志位 */
+    
+    	/* 等待传输完成 */
+    	while(!((base->I2SR >> 7) & 0X1)){};
+    
+    	/* 如果是读的话，要先发送寄存器地址，所以要先将方向改为写 */
+        if ((xfer->subaddressSize > 0) && (xfer->direction == kI2C_Read))
+        {
+            direction = kI2C_Write;
+        }
+    
+    	ret = i2c_master_start(base, xfer->slaveAddress, direction); /* 发送开始信号 */
+        if(ret)
+        {	
+    		return ret;
+    	}
+    
+    	while(!(base->I2SR & (1 << 1))){};			/* 等待传输完成 */
+    
+        ret = i2c_check_and_clear_error(base, base->I2SR);	/* 检查是否出现传输错误 */
+        if(ret)
+        {
+          	i2c_master_stop(base); 						/* 发送出错，发送停止信号 */
+            return ret;
+        }
+    	
+        /* 发送寄存器地址 */
+        if(xfer->subaddressSize)
+        {
+            do
+            {
+    			base->I2SR &= ~(1 << 1);			/* 清除标志位 */
+                xfer->subaddressSize--;				/* 地址长度减一 */
+    			
+                base->I2DR =  ((xfer->subaddress) >> (8 * xfer->subaddressSize)); //向I2DR寄存器写入子地址
+      
+    			while(!(base->I2SR & (1 << 1)));  	/* 等待传输完成 */
+    
+                /* 检查是否有错误发生 */
+                ret = i2c_check_and_clear_error(base, base->I2SR);
+                if(ret)
+                {
+                 	i2c_master_stop(base); 				/* 发送停止信号 */
+                 	return ret;
+                }  
+            } while ((xfer->subaddressSize > 0) && (ret == I2C_STATUS_OK));
+    
+            if(xfer->direction == kI2C_Read) 		/* 读取数据 */
+            {
+                base->I2SR &= ~(1 << 1);			/* 清除中断挂起位 */
+                i2c_master_repeated_start(base, xfer->slaveAddress, kI2C_Read); /* 发送重复开始信号和从机地址 */
+        		while(!(base->I2SR & (1 << 1))){};/* 等待传输完成 */
+    
+                /* 检查是否有错误发生 */
+    			ret = i2c_check_and_clear_error(base, base->I2SR);
+                if(ret)
+                {
+                 	ret = I2C_STATUS_ADDRNAK;
+                    i2c_master_stop(base); 		/* 发送停止信号 */
+                    return ret;  
+                }
+            }
+        }
+    
+        /* 发送数据 */
+        if ((xfer->direction == kI2C_Write) && (xfer->dataSize > 0))
+        {
+        	i2c_master_write(base, xfer->data, xfer->dataSize);
+    	}
+    
+        /* 读取数据 */
+        if ((xfer->direction == kI2C_Read) && (xfer->dataSize > 0))
+        {
+           	i2c_master_read(base, xfer->data, xfer->dataSize);
+    	}
+    	return 0;	
+    }
+    ```
+
+    
+
