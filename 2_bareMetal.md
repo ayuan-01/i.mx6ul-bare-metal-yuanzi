@@ -1361,7 +1361,7 @@ IIC读时序
     unsigned int i2c_master_repeated_start(I2C_Type *base, unsigned char address, enum i2c_direction direction)
     {
         /* I2C是否忙或者工作在从机模式下，因为restart信号是在信号传输中进行的，所以要检查在这个过程中是否被设置成了从机模式 */
-        if((base->I2SR & (1 << 5)) && (base->I2CR & (1 << 5)))
+        if((base->I2SR & (1 << 5)) && (base->I2CR & (1 << 5)) == 0)
             return 1;
         /* 1<<4为发送，1<<2为产生restart信号 */
         base->I2CR |= (1 << 4) | (1 << 2);
