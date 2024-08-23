@@ -1552,5 +1552,68 @@ IIC读时序
     }
     ```
 
+- 从机函数
+
+  - 宏定义，器件地址和寄存器地址
+
+    ```c
+    #define AP3216C_ADDR    	0X1E	/* AP3216C器件地址 */
     
+    /* AP3316C寄存器 */
+    #define AP3216C_SYSTEMCONG	0x00	/* 配置寄存器 			*/
+    #define AP3216C_INTSTATUS	0X01	/* 中断状态寄存器 			*/
+    #define AP3216C_INTCLEAR	0X02	/* 中断清除寄存器 			*/
+    #define AP3216C_IRDATALOW	0x0A	/* IR数据低字节 			*/
+    #define AP3216C_IRDATAHIGH	0x0B	/* IR数据高字节 			*/
+    #define AP3216C_ALSDATALOW	0x0C	/* ALS数据低字节 		*/
+    #define AP3216C_ALSDATAHIGH	0X0D	/* ALS数据高字节			*/
+    #define AP3216C_PSDATALOW	0X0E	/* PS数据低字节 			*/
+    #define AP3216C_PSDATAHIGH	0X0F	/* PS数据高字节 			*/
+    ```
+
+  - 初始化函数
+
+    IO初始化
+
+    I2C接口初始化
+
+    传感器初始化
+
+    ​	找一个寄存器，先写后读，判断读写的数据是否一致
+
+  - 读一个字节
+
+  - 写一个字节
+
+  - 读数据
+
+    ```c
+    void ap3216c_readdata(unsigned short *ir, unsigned short *ps, unsigned short *als)
+    {
+        unsigned char buf[6];
+        unsigned char i;
+    
+    	/* 循环读取所有传感器数据 */
+        for(i = 0; i < 6; i++)	
+        {
+            buf[i] = ap3216c_readonebyte(AP3216C_ADDR, AP3216C_IRDATALOW + i);	
+        }
+    	
+        if(buf[0] & 0X80) 	/* IR_OF位为1,则数据无效 */
+    		*ir = 0;					
+    	else 				/* 读取IR传感器的数据   		*/
+    		*ir = ((unsigned short)buf[1] << 2) | (buf[0] & 0X03); 			
+    	
+    	*als = ((unsigned short)buf[3] << 8) | buf[2];	/* 读取ALS传感器的数据 			 */  
+    	
+        if(buf[4] & 0x40)	/* IR_OF位为1,则数据无效 			*/
+    		*ps = 0;    													
+    	else 				/* 读取PS传感器的数据    */
+    		*ps = ((unsigned short)(buf[5] & 0X3F) << 4) | (buf[4] & 0X0F); 	
+    }
+    ```
+
+### SPI
+
+
 
